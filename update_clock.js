@@ -1,14 +1,16 @@
 // update_clock.js
-// Posts a new Discord message via webhook if DISCORD_MESSAGE_ID is not set
-// Otherwise edits the existing message to update times and daylight state icons
-// Uses a sunrise and sunset approximation (NOAA style) per city using fixed lat and lon
-function pad2(n) { return String(n).padStart(2, "0"); }
-function fmtUtcStampSeconds() {
-  const iso = new Date().toISOString().replace("T", " ").slice(0, 19);
-  return iso;
+// Discord webhook world time board with dynamic sunrise, sunset, day, night icons
+// Cities are sorted by current local time on each update
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
 }
+
+function utcStampSeconds() {
+  return new Date().toISOString().replace("T", " ").slice(0, 19);
+}
+
 function getParts(tz) {
-  const d = new Date();
   const parts = new Intl.DateTimeFormat("en-AU", {
     timeZone: tz,
     hour: "2-digit",
@@ -18,200 +20,222 @@ function getParts(tz) {
     weekday: "short",
     day: "2-digit",
     month: "short"
-  }).formatToParts(d);
-  const get = (t) => parts.find(p => p.type === t)?.value;
+  }).formatToParts(new Date());
+
+  const get = t => parts.find(p => p.type === t)?.value;
+
   return {
-    hh: Number(get("hour") ?? "0"),
-    mm: Number(get("minute") ?? "0"),
-    ss: Number(get("second") ?? "0"),
-    wd: String(get("weekday") ?? ""),
-    dd: String(get("day") ?? ""),
-    mon: String(get("month") ?? "")
+    hh: Number(get("hour") || 0),
+    mm: Number(get("minute") || 0),
+    ss: Number(get("second") || 0),
+    wd: get("weekday") || "",
+    dd: get("day") || "",
+    mon: get("month") || ""
   };
 }
-function formatClock(tz) {
+
+function minutesSinceMidnight(tz) {
+  const p = getParts(tz);
+  return p.hh * 60 + p.mm + p.ss / 60;
+}
+
+function formatTime(tz) {
   const p = getParts(tz);
   return `${pad2(p.hh)}:${pad2(p.mm)}`;
 }
-function formatDayLabel(tz) {
+
+function formatDay(tz) {
   const p = getParts(tz);
   return `${p.wd} ${p.dd} ${p.mon}`;
 }
-function minutesSinceMidnight(tz) {
-  const p = getParts(tz);
-  return (p.hh * 60) + p.mm + (p.ss / 60);
-}
-function tzOffsetMinutesForNow(tz) {
-  const now = new Date();
-  const utcParts = new Intl.DateTimeFormat("en-AU", {
-    timeZone: "UTC",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  }).formatToParts(now);
-  const tzParts = new Intl.DateTimeFormat("en-AU", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  }).formatToParts(now);
-  const toNum = (arr, type) => Number(arr.find(p => p.type === type)?.value ?? "0");
-  const utcMs = Date.UTC(
-    toNum(utcParts, "year"),
-    toNum(utcParts, "month") - 1,
-    toNum(utcParts, "day"),
-    toNum(utcParts, "hour"),
-    toNum(utcParts, "minute"),
-    toNum(utcParts, "second")
-  );
-  const tzMs = Date.UTC(
-    toNum(tzParts, "year"),
-    toNum(tzParts, "month") - 1,
-    toNum(tzParts, "day"),
-    toNum(tzParts, "hour"),
-    toNum(tzParts, "minute"),
-    toNum(tzParts, "second")
-  );
-  return Math.round((tzMs - utcMs) / 60000);
-}
-function dayOfYearInTz(tz) {
-  const now = new Date();
+
+function dayOfYear(tz) {
   const parts = new Intl.DateTimeFormat("en-AU", {
     timeZone: tz,
     year: "numeric",
     month: "2-digit",
-    day: "2-digit",
-    hour12: false
-  }).formatToParts(now);
-  const y = Number(parts.find(p => p.type === "year")?.value ?? "1970");
-  const m = Number(parts.find(p => p.type === "month")?.value ?? "1");
-  const d = Number(parts.find(p => p.type === "day")?.value ?? "1");
+    day: "2-digit"
+  }).formatToParts(new Date());
+
+  const y = Number(parts.find(p => p.type === "year")?.value || 1970);
+  const m = Number(parts.find(p => p.type === "month")?.value || 1);
+  const d = Number(parts.find(p => p.type === "day")?.value || 1);
+
   const start = Date.UTC(y, 0, 1);
   const current = Date.UTC(y, m - 1, d);
   return Math.floor((current - start) / 86400000) + 1;
 }
-function deg2rad(d) { return d * (Math.PI / 180); }
-function rad2deg(r) { return r * (180 / Math.PI); }
-function normalizeDegrees(d) {
-  let x = d % 360;
-  if (x < 0) x += 360;
+
+function tzOffsetMinutes(tz) {
+  const now = new Date();
+
+  const utc = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "UTC",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(now);
+
+  const loc = new Intl.DateTimeFormat("en-AU", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(now);
+
+  const toNum = (arr, t) => Number(arr.find(p => p.type === t)?.value || 0);
+
+  const utcMin = toNum(utc, "hour") * 60 + toNum(utc, "minute");
+  const locMin = toNum(loc, "hour") * 60 + toNum(loc, "minute");
+
+  return locMin - utcMin;
+}
+
+function deg2rad(d) {
+  return d * Math.PI / 180;
+}
+
+function rad2deg(r) {
+  return r * 180 / Math.PI;
+}
+
+function normalize(v, max) {
+  let x = v % max;
+  if (x < 0) x += max;
   return x;
 }
-function normalizeHours(h) {
-  let x = h % 24;
-  if (x < 0) x += 24;
-  return x;
-}
-// Sunrise and sunset approximation for the current local date in the given timezone
-// Returns minutes since midnight local time
-function approxSunriseSunsetMinutes(tz, lat, lon) {
-  const N = dayOfYearInTz(tz);
-  const tzOffsetMin = tzOffsetMinutesForNow(tz);
+
+function approxSunTimes(tz, lat, lon) {
+  const N = dayOfYear(tz);
+  const offset = tzOffsetMinutes(tz) / 60;
   const lngHour = lon / 15;
   const zenith = 90.833;
-  function compute(isSunrise) {
-    const t = N + ((isSunrise ? 6 : 18) - lngHour) / 24;
-    const M = (0.9856 * t) - 3.289;
-    let L = M + (1.916 * Math.sin(deg2rad(M))) + (0.020 * Math.sin(deg2rad(2 * M))) + 282.634;
-    L = normalizeDegrees(L);
+
+  function calc(isRise) {
+    const t = N + ((isRise ? 6 : 18) - lngHour) / 24;
+    const M = 0.9856 * t - 3.289;
+
+    let L = M + 1.916 * Math.sin(deg2rad(M)) + 0.02 * Math.sin(deg2rad(2 * M)) + 282.634;
+    L = normalize(L, 360);
+
     let RA = rad2deg(Math.atan(0.91764 * Math.tan(deg2rad(L))));
-    RA = normalizeDegrees(RA);
-    const Lquadrant = Math.floor(L / 90) * 90;
-    const RAquadrant = Math.floor(RA / 90) * 90;
-    RA = RA + (Lquadrant - RAquadrant);
-    RA = RA / 15;
+    RA = normalize(RA, 360);
+
+    const Lq = Math.floor(L / 90) * 90;
+    const RAq = Math.floor(RA / 90) * 90;
+    RA = (RA + (Lq - RAq)) / 15;
+
     const sinDec = 0.39782 * Math.sin(deg2rad(L));
     const cosDec = Math.cos(Math.asin(sinDec));
-    const cosH = (Math.cos(deg2rad(zenith)) - (sinDec * Math.sin(deg2rad(lat)))) / (cosDec * Math.cos(deg2rad(lat)));
-    if (cosH > 1) return null;
-    if (cosH < -1) return null;
-    let H = isSunrise ? (360 - rad2deg(Math.acos(cosH))) : rad2deg(Math.acos(cosH));
-    H = H / 15;
-    const T = H + RA - (0.06571 * t) - 6.622;
-    const UT = normalizeHours(T - lngHour);
-    const localHours = normalizeHours(UT + (tzOffsetMin / 60));
-    return Math.round(localHours * 60);
+    const cosH =
+      (Math.cos(deg2rad(zenith)) - sinDec * Math.sin(deg2rad(lat))) /
+      (cosDec * Math.cos(deg2rad(lat)));
+
+    if (cosH > 1 || cosH < -1) return null;
+
+    let H = isRise ? 360 - rad2deg(Math.acos(cosH)) : rad2deg(Math.acos(cosH));
+    H /= 15;
+
+    const T = H + RA - 0.06571 * t - 6.622;
+    const UT = normalize(T - lngHour, 24);
+    const local = normalize(UT + offset, 24);
+
+    return Math.round(local * 60);
   }
-  const sunrise = compute(true);
-  const sunset = compute(false);
-  return { sunrise, sunset };
+
+  return {
+    sunrise: calc(true),
+    sunset: calc(false)
+  };
 }
-function stateEmojiFromSun(tz, lat, lon) {
-  const nowMin = minutesSinceMidnight(tz);
-  const sun = approxSunriseSunsetMinutes(tz, lat, lon);
-  if (sun.sunrise === null || sun.sunset === null) {
-    const p = getParts(tz);
-    return (p.hh >= 6 && p.hh < 18) ? "☀️" : "🌙";
+
+function sunEmoji(tz, lat, lon) {
+  const now = minutesSinceMidnight(tz);
+  const sun = approxSunTimes(tz, lat, lon);
+
+  if (!sun.sunrise || !sun.sunset) {
+    return now >= 360 && now < 1080 ? "☀️" : "🌙";
   }
-  const sunrise = sun.sunrise;
-  const sunset = sun.sunset;
-  const dawnBand = 30;
-  const duskBand = 30;
-  if (nowMin >= (sunrise - dawnBand) && nowMin < sunrise) return "🌅";
-  if (nowMin >= sunrise && nowMin < (sunrise + 120)) return "☀️";
-  if (nowMin >= (sunrise + 120) && nowMin < (sunset - 120)) return "☀️";
-  if (nowMin >= (sunset - 120) && nowMin < sunset) return "☀️";
-  if (nowMin >= sunset && nowMin < (sunset + duskBand)) return "🌆";
+
+  if (now >= sun.sunrise - 30 && now < sun.sunrise) return "🌅";
+  if (now >= sun.sunrise && now < sun.sunset) return "☀️";
+  if (now >= sun.sunset && now < sun.sunset + 30) return "🌆";
   return "🌙";
 }
+
 function buildMessage() {
   const cities = [
+    { name: "Auckland", tz: "Pacific/Auckland", lat: -36.8485, lon: 174.7633 },
     { name: "Sydney", tz: "Australia/Sydney", lat: -33.8688, lon: 151.2093 },
+    { name: "Singapore", tz: "Asia/Singapore", lat: 1.3521, lon: 103.8198 },
+    { name: "Istanbul", tz: "Europe/Istanbul", lat: 41.0082, lon: 28.9784 },
+    { name: "Helsinki", tz: "Europe/Helsinki", lat: 60.1699, lon: 24.9384 },
+    { name: "London", tz: "Europe/London", lat: 51.5074, lon: -0.1278 },
+    { name: "Guadalajara", tz: "America/Mexico_City", lat: 20.6597, lon: -103.3496 },
     { name: "Baltimore", tz: "America/New_York", lat: 39.2904, lon: -76.6122 },
     { name: "Toronto", tz: "America/Toronto", lat: 43.6532, lon: -79.3832 },
-    { name: "Helsinki", tz: "Europe/Helsinki", lat: 60.1699, lon: 24.9384 },
     { name: "Los Angeles", tz: "America/Los_Angeles", lat: 34.0522, lon: -118.2437 }
   ];
-  const rows = cities.map(c => {
-    const icon = stateEmojiFromSun(c.tz, c.lat, c.lon);
-    const time = formatClock(c.tz);
-    const day = formatDayLabel(c.tz);
-    return { icon, name: c.name, time, day };
-  });
+
+  const rows = cities.map(c => ({
+    name: c.name,
+    tz: c.tz,
+    time: formatTime(c.tz),
+    day: formatDay(c.tz),
+    mins: minutesSinceMidnight(c.tz),
+    icon: sunEmoji(c.tz, c.lat, c.lon)
+  }));
+
+  rows.sort((a, b) => a.mins - b.mins);
+
   const nameWidth = Math.max(...rows.map(r => r.name.length));
   const lines = [];
+
   lines.push("WORLD TIME");
-  lines.push(`Updated (UTC): ${fmtUtcStampSeconds()}`);
+  lines.push(`Updated (UTC): ${utcStampSeconds()}`);
   lines.push("```text");
+
   for (const r of rows) {
-    const namePadded = r.name.padEnd(nameWidth, " ");
-    lines.push(`${r.icon}  ${namePadded}  ${r.time}  ${r.day}`);
+    lines.push(`${r.icon}  ${r.name.padEnd(nameWidth)}  ${r.time}  ${r.day}`);
   }
+
   lines.push("```");
   return lines.join("\n");
 }
+
 async function main() {
   const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
   if (!webhookUrl) throw new Error("Missing DISCORD_WEBHOOK_URL");
+
   const messageId = process.env.DISCORD_MESSAGE_ID;
   const content = buildMessage();
+
   if (!messageId) {
-    const url = `${webhookUrl}?wait=true`;
-    const res = await fetch(url, {
+    const res = await fetch(`${webhookUrl}?wait=true`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content })
     });
+
     if (!res.ok) throw new Error(`Webhook POST failed: ${res.status} ${await res.text()}`);
     const data = await res.json();
     console.log(`Created message. Set DISCORD_MESSAGE_ID to: ${data.id}`);
     return;
   }
-  const editUrl = `${webhookUrl}/messages/${messageId}`;
-  const res = await fetch(editUrl, {
+
+  const res = await fetch(`${webhookUrl}/messages/${messageId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content })
   });
+
   if (!res.ok) throw new Error(`Webhook PATCH failed: ${res.status} ${await res.text()}`);
   console.log("Updated message.");
 }
-main().catch(err => { console.error(err); process.exit(1); });
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
