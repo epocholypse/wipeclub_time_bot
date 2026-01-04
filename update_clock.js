@@ -1,8 +1,9 @@
 // update_clock.js
-// Discord webhook world time board with dynamic sunrise, sunset, day, night icons
+// Discord webhook world time board with dynamic sunrise and sunset icons
 // Cities are sorted by current local time on each update
 // Output includes correct UTC offsets using system timezone data
-// Fixes midnight 24:xx formatting and offset sign errors
+// Inserts blank lines when the local date changes
+// Fix included for locales that return hour "24" at midnight
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -24,7 +25,7 @@ function getParts(tz) {
     month: "short"
   }).formatToParts(new Date());
 
-  const get = t => parts.find(p => p.type === t)?.value;
+  const get = (t) => parts.find((p) => p.type === t)?.value;
 
   const rawHour = Number(get("hour") || 0);
   const hh = rawHour === 24 ? 0 : rawHour;
@@ -67,9 +68,9 @@ function dayOfYear(tz) {
     day: "2-digit"
   }).formatToParts(new Date());
 
-  const y = Number(parts.find(p => p.type === "year")?.value || 1970);
-  const m = Number(parts.find(p => p.type === "month")?.value || 1);
-  const d = Number(parts.find(p => p.type === "day")?.value || 1);
+  const y = Number(parts.find((p) => p.type === "year")?.value || 1970);
+  const m = Number(parts.find((p) => p.type === "month")?.value || 1);
+  const d = Number(parts.find((p) => p.type === "day")?.value || 1);
 
   const start = Date.UTC(y, 0, 1);
   const current = Date.UTC(y, m - 1, d);
@@ -83,16 +84,26 @@ function utcOffsetLabel(tz) {
     timeZoneName: "shortOffset"
   });
   const parts = fmt.formatToParts(now);
-  const off = parts.find(p => p.type === "timeZoneName")?.value || "UTC";
+  const off = parts.find((p) => p.type === "timeZoneName")?.value || "UTC";
   return off.replace("GMT", "UTC");
 }
 
+function tzOffsetMinutesFromLabel(tz) {
+  const label = utcOffsetLabel(tz); // e.g. UTC+11, UTC-05, UTC+09:30
+  const m = label.match(/UTC([+-])(\d{1,2})(?::(\d{2}))?/);
+  if (!m) return 0;
+  const sign = m[1] === "-" ? -1 : 1;
+  const hh = Number(m[2] || 0);
+  const mm = Number(m[3] || 0);
+  return sign * (hh * 60 + mm);
+}
+
 function deg2rad(d) {
-  return d * Math.PI / 180;
+  return (d * Math.PI) / 180;
 }
 
 function rad2deg(r) {
-  return r * 180 / Math.PI;
+  return (r * 180) / Math.PI;
 }
 
 function normalize(v, max) {
@@ -101,8 +112,9 @@ function normalize(v, max) {
   return x;
 }
 
-function approxSunTimes(tz, lat, lon) {
+function approxSunTimesLocalMinutes(tz, lat, lon) {
   const N = dayOfYear(tz);
+  const offsetHours = tzOffsetMinutesFromLabel(tz) / 60;
   const lngHour = lon / 15;
   const zenith = 90.833;
 
@@ -122,6 +134,7 @@ function approxSunTimes(tz, lat, lon) {
 
     const sinDec = 0.39782 * Math.sin(deg2rad(L));
     const cosDec = Math.cos(Math.asin(sinDec));
+
     const cosH =
       (Math.cos(deg2rad(zenith)) - sinDec * Math.sin(deg2rad(lat))) /
       (cosDec * Math.cos(deg2rad(lat)));
@@ -129,11 +142,13 @@ function approxSunTimes(tz, lat, lon) {
     if (cosH > 1 || cosH < -1) return null;
 
     let H = isRise ? 360 - rad2deg(Math.acos(cosH)) : rad2deg(Math.acos(cosH));
-    H /= 15;
+    H = H / 15;
 
     const T = H + RA - 0.06571 * t - 6.622;
     const UT = normalize(T - lngHour, 24);
-    return Math.round(UT * 60);
+    const localHours = normalize(UT + offsetHours, 24);
+
+    return Math.round(localHours * 60);
   }
 
   return { sunrise: calc(true), sunset: calc(false) };
@@ -141,7 +156,7 @@ function approxSunTimes(tz, lat, lon) {
 
 function sunEmoji(tz, lat, lon) {
   const now = minutesSinceMidnight(tz);
-  const sun = approxSunTimes(tz, lat, lon);
+  const sun = approxSunTimesLocalMinutes(tz, lat, lon);
 
   if (sun.sunrise === null || sun.sunset === null) {
     return now >= 360 && now < 1080 ? "☀️" : "🌙";
@@ -168,7 +183,7 @@ function buildMessage() {
     { name: "Los Angeles", tz: "America/Los_Angeles", lat: 34.0522, lon: -118.2437 }
   ];
 
-  const rows = cities.map(c => ({
+  const rows = cities.map((c) => ({
     name: c.name,
     tz: c.tz,
     time: formatTime(c.tz),
@@ -181,8 +196,8 @@ function buildMessage() {
 
   rows.sort((a, b) => a.mins - b.mins);
 
-  const nameWidth = Math.max(...rows.map(r => r.name.length));
-  const offsetWidth = Math.max(...rows.map(r => r.offset.length));
+  const nameWidth = Math.max(...rows.map((r) => r.name.length));
+  const offsetWidth = Math.max(...rows.map((r) => r.offset.length));
 
   const lines = [];
   lines.push("WORLD TIME");
@@ -193,4 +208,48 @@ function buildMessage() {
 
   let lastDayKey = null;
   for (const r of rows) {
-    if (lastDayKey && r.dayKey !== las
+    if (lastDayKey && r.dayKey !== lastDayKey) {
+      lines.push("");
+    }
+    lines.push(`${r.icon}    ${r.name.padEnd(nameWidth)}  ${r.time}  ${r.offset.padEnd(offsetWidth)}  ${r.day}`);
+    lastDayKey = r.dayKey;
+  }
+
+  lines.push("```");
+  return lines.join("\n");
+}
+
+async function main() {
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl) throw new Error("Missing DISCORD_WEBHOOK_URL");
+
+  const messageId = process.env.DISCORD_MESSAGE_ID;
+  const content = buildMessage();
+
+  if (!messageId) {
+    const res = await fetch(`${webhookUrl}?wait=true`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content })
+    });
+
+    if (!res.ok) throw new Error(`Webhook POST failed: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+    console.log(`Created message. Set DISCORD_MESSAGE_ID to: ${data.id}`);
+    return;
+  }
+
+  const res = await fetch(`${webhookUrl}/messages/${messageId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content })
+    });
+
+  if (!res.ok) throw new Error(`Webhook PATCH failed: ${res.status} ${await res.text()}`);
+  console.log("Updated message.");
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
