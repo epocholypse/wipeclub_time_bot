@@ -2,6 +2,7 @@
 // Discord webhook world time board with dynamic sunrise, sunset, day, night icons
 // Cities are sorted by current local time on each update
 // Output includes UTC offsets and inserts blank lines when the local date changes
+// Fix included for locales that return hour "24" at midnight
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -25,8 +26,11 @@ function getParts(tz) {
 
   const get = (t) => parts.find((p) => p.type === t)?.value;
 
+  const rawHour = Number(get("hour") || 0);
+  const hh = rawHour === 24 ? 0 : rawHour;
+
   return {
-    hh: Number(get("hour") || 0),
+    hh,
     mm: Number(get("minute") || 0),
     ss: Number(get("second") || 0),
     wd: get("weekday") || "",
@@ -221,7 +225,9 @@ function buildMessage() {
     if (lastDayKey && r.dayKey !== lastDayKey) {
       lines.push("");
     }
-    lines.push(`${r.icon}    ${r.name.padEnd(nameWidth)}  ${r.time}  ${r.offset.padEnd(offsetWidth)}  ${r.day}`);
+    lines.push(
+      `${r.icon}    ${r.name.padEnd(nameWidth)}  ${r.time}  ${r.offset.padEnd(offsetWidth)}  ${r.day}`
+    );
     lastDayKey = r.dayKey;
   }
 
