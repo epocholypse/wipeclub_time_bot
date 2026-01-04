@@ -1,8 +1,8 @@
 // update_clock.js
 // Discord webhook world time board with dynamic sunrise, sunset, day, night icons
 // Cities are sorted by current local time on each update
-// Output includes UTC offsets and inserts blank lines when the local date changes
-// Fix included for locales that return hour "24" at midnight
+// Output includes correct UTC offsets using system timezone data
+// Fixes midnight 24:xx formatting and offset sign errors
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -24,7 +24,7 @@ function getParts(tz) {
     month: "short"
   }).formatToParts(new Date());
 
-  const get = (t) => parts.find((p) => p.type === t)?.value;
+  const get = t => parts.find(p => p.type === t)?.value;
 
   const rawHour = Number(get("hour") || 0);
   const hh = rawHour === 24 ? 0 : rawHour;
@@ -67,58 +67,32 @@ function dayOfYear(tz) {
     day: "2-digit"
   }).formatToParts(new Date());
 
-  const y = Number(parts.find((p) => p.type === "year")?.value || 1970);
-  const m = Number(parts.find((p) => p.type === "month")?.value || 1);
-  const d = Number(parts.find((p) => p.type === "day")?.value || 1);
+  const y = Number(parts.find(p => p.type === "year")?.value || 1970);
+  const m = Number(parts.find(p => p.type === "month")?.value || 1);
+  const d = Number(parts.find(p => p.type === "day")?.value || 1);
 
   const start = Date.UTC(y, 0, 1);
   const current = Date.UTC(y, m - 1, d);
   return Math.floor((current - start) / 86400000) + 1;
 }
 
-function tzOffsetMinutes(tz) {
-  const now = new Date();
-
-  const utc = new Intl.DateTimeFormat("en-AU", {
-    timeZone: "UTC",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(now);
-
-  const loc = new Intl.DateTimeFormat("en-AU", {
-    timeZone: tz,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(now);
-
-  const toNum = (arr, t) => Number(arr.find((p) => p.type === t)?.value || 0);
-
-  const utcMin = toNum(utc, "hour") * 60 + toNum(utc, "minute");
-  const locMin = toNum(loc, "hour") * 60 + toNum(loc, "minute");
-
-  let diff = locMin - utcMin;
-  if (diff > 840) diff -= 1440;
-  if (diff < -720) diff += 1440;
-  return diff;
-}
-
 function utcOffsetLabel(tz) {
-  const offset = tzOffsetMinutes(tz);
-  const sign = offset >= 0 ? "+" : "-";
-  const abs = Math.abs(offset);
-  const hh = pad2(Math.floor(abs / 60));
-  const mm = pad2(abs % 60);
-  return `UTC${sign}${hh}:${mm}`;
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    timeZoneName: "shortOffset"
+  });
+  const parts = fmt.formatToParts(now);
+  const off = parts.find(p => p.type === "timeZoneName")?.value || "UTC";
+  return off.replace("GMT", "UTC");
 }
 
 function deg2rad(d) {
-  return (d * Math.PI) / 180;
+  return d * Math.PI / 180;
 }
 
 function rad2deg(r) {
-  return (r * 180) / Math.PI;
+  return r * 180 / Math.PI;
 }
 
 function normalize(v, max) {
@@ -129,7 +103,6 @@ function normalize(v, max) {
 
 function approxSunTimes(tz, lat, lon) {
   const N = dayOfYear(tz);
-  const offsetHours = tzOffsetMinutes(tz) / 60;
   const lngHour = lon / 15;
   const zenith = 90.833;
 
@@ -160,9 +133,7 @@ function approxSunTimes(tz, lat, lon) {
 
     const T = H + RA - 0.06571 * t - 6.622;
     const UT = normalize(T - lngHour, 24);
-    const local = normalize(UT + offsetHours, 24);
-
-    return Math.round(local * 60);
+    return Math.round(UT * 60);
   }
 
   return { sunrise: calc(true), sunset: calc(false) };
@@ -197,7 +168,7 @@ function buildMessage() {
     { name: "Los Angeles", tz: "America/Los_Angeles", lat: 34.0522, lon: -118.2437 }
   ];
 
-  const rows = cities.map((c) => ({
+  const rows = cities.map(c => ({
     name: c.name,
     tz: c.tz,
     time: formatTime(c.tz),
@@ -210,8 +181,8 @@ function buildMessage() {
 
   rows.sort((a, b) => a.mins - b.mins);
 
-  const nameWidth = Math.max(...rows.map((r) => r.name.length));
-  const offsetWidth = Math.max(...rows.map((r) => r.offset.length));
+  const nameWidth = Math.max(...rows.map(r => r.name.length));
+  const offsetWidth = Math.max(...rows.map(r => r.offset.length));
 
   const lines = [];
   lines.push("WORLD TIME");
@@ -222,50 +193,4 @@ function buildMessage() {
 
   let lastDayKey = null;
   for (const r of rows) {
-    if (lastDayKey && r.dayKey !== lastDayKey) {
-      lines.push("");
-    }
-    lines.push(
-      `${r.icon}    ${r.name.padEnd(nameWidth)}  ${r.time}  ${r.offset.padEnd(offsetWidth)}  ${r.day}`
-    );
-    lastDayKey = r.dayKey;
-  }
-
-  lines.push("```");
-  return lines.join("\n");
-}
-
-async function main() {
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-  if (!webhookUrl) throw new Error("Missing DISCORD_WEBHOOK_URL");
-
-  const messageId = process.env.DISCORD_MESSAGE_ID;
-  const content = buildMessage();
-
-  if (!messageId) {
-    const res = await fetch(`${webhookUrl}?wait=true`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content })
-    });
-
-    if (!res.ok) throw new Error(`Webhook POST failed: ${res.status} ${await res.text()}`);
-    const data = await res.json();
-    console.log(`Created message. Set DISCORD_MESSAGE_ID to: ${data.id}`);
-    return;
-  }
-
-  const res = await fetch(`${webhookUrl}/messages/${messageId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content })
-  });
-
-  if (!res.ok) throw new Error(`Webhook PATCH failed: ${res.status} ${await res.text()}`);
-  console.log("Updated message.");
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+    if (lastDayKey && r.dayKey !== las
