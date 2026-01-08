@@ -89,7 +89,7 @@ function utcOffsetLabel(tz) {
 }
 
 function tzOffsetMinutesFromLabel(tz) {
-  const label = utcOffsetLabel(tz); // e.g. UTC+11, UTC-05, UTC+09:30
+  const label = utcOffsetLabel(tz); // examples: UTC+11, UTC-05, UTC+09:30
   const m = label.match(/UTC([+-])(\d{1,2})(?::(\d{2}))?/);
   if (!m) return 0;
   const sign = m[1] === "-" ? -1 : 1;
@@ -173,9 +173,15 @@ function buildMessage() {
     { name: "Auckland", tz: "Pacific/Auckland", lat: -36.8485, lon: 174.7633 },
     { name: "Sydney", tz: "Australia/Sydney", lat: -33.8688, lon: 151.2093 },
     { name: "Singapore", tz: "Asia/Singapore", lat: 1.3521, lon: 103.8198 },
+    { name: "Taipei", tz: "Asia/Taipei", lat: 25.0330, lon: 121.5654 },
+    { name: "Goa", tz: "Asia/Kolkata", lat: 15.4909, lon: 73.8278 },
     { name: "Istanbul", tz: "Europe/Istanbul", lat: 41.0082, lon: 28.9784 },
+    { name: "Athens", tz: "Europe/Athens", lat: 37.9838, lon: 23.7275 },
     { name: "Helsinki", tz: "Europe/Helsinki", lat: 60.1699, lon: 24.9384 },
+    { name: "Rome", tz: "Europe/Rome", lat: 41.9028, lon: 12.4964 },
+    { name: "Amsterdam", tz: "Europe/Amsterdam", lat: 52.3676, lon: 4.9041 },
     { name: "London", tz: "Europe/London", lat: 51.5074, lon: -0.1278 },
+    { name: "São Paulo", tz: "America/Sao_Paulo", lat: -23.5505, lon: -46.6333 },
     { name: "Guadalajara", tz: "America/Mexico_City", lat: 20.6597, lon: -103.3496 },
     { name: "Austin", tz: "America/Chicago", lat: 30.2672, lon: -97.7431 },
     { name: "Baltimore", tz: "America/New_York", lat: 39.2904, lon: -76.6122 },
@@ -242,8 +248,8 @@ async function main() {
   const res = await fetch(`${webhookUrl}/messages/${messageId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content })
-    });
+    body: JSON.stringify({ content })
+  });
 
   if (!res.ok) throw new Error(`Webhook PATCH failed: ${res.status} ${await res.text()}`);
   console.log("Updated message.");
